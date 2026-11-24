@@ -10,7 +10,8 @@
 # Pure Python 3.13 standard library. It embeds two typefaces (DejaVu Sans for text, DejaVu Serif
 # Bold for the masthead and headline) as flat glyph contours extracted from the TTF files, and
 # the Natural Earth 110m land polygons, both compressed with gzip and base64-packed below.
-# Rendering is a scanline even-odd polygon fill into an RGB framebuffer written as PNG.
+# Rendering is a scanline even-odd polygon fill into an RGB framebuffer, written out
+# as a hand-rolled PNG (zlib + CRC32, standard library only).
 #
 # Facts: every story happened or was first reported on 24 November 2026, verified across at
 # least two sources (AP, Reuters, The Guardian, CNBC, Anadolu, Just Security's Early Edition).
