@@ -480,8 +480,13 @@ def open_map_blob(b64):
 # first reported on that date (UTC) and checked against the named outlets.
 # ---------------------------------------------------------------------------
 
+import os as _os
+import sys as _sys
+
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+
 from wire24 import (BANNER, COLUMNS, COLOPHON, EDITION_LINE,
-                     LEADS, TALLY, WIRE)
+                    LEADS, TALLY, WIRE)
 from checkpage import audit as audit_page
 
 
