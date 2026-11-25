@@ -681,18 +681,6 @@ def write_png(path):
     return len(png)
 
 
-if __name__ == '__main__':
-    # Stage-1 smoke test: fill two polygons and parse a glyph, no layout yet.
-    font = load_font('sans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
-    contours, adv = font.glyph_contours('A')
-    print('glyph A: contours=%d advance=%d upem=%d' % (len(contours), adv, font.upem))
-    fill_polygon([(100, 100), (400, 100), (400, 300), (100, 300)], RED)
-    draw_text(font, 'STAGE 1 OK', 100, 400, 48, INK)
-    hline(100, 500, 420, LINE, 2)
-    n = write_png('/home/agentuser/ni24-v4/build/stage1.png')
-    print('stage1.png bytes=%d' % n)
-
-
 # --- stage 3: the page --------------------------------------------------------
 HERO_DOTS = [(262.4, 38.7), (56.3, 26.6), (37.5, 55.5), (27.0, 36.9)]
 
@@ -792,4 +780,17 @@ if __name__ == '__main__':
     print('wrote %s (%d bytes)' % (out, n))
 
 
+
+
+
+if __name__ == '__main__':
+    # Stage-1 smoke test: fill two polygons and parse a glyph, no layout yet.
+    font = load_font('sans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+    contours, adv = font.glyph_contours('A')
+    print('glyph A: contours=%d advance=%d upem=%d' % (len(contours), adv, font.upem))
+    fill_polygon([(100, 100), (400, 100), (400, 300), (100, 300)], RED)
+    draw_text(font, 'STAGE 1 OK', 100, 400, 48, INK)
+    hline(100, 500, 420, LINE, 2)
+    n = write_png('/home/agentuser/ni24-v4/build/stage1.png')
+    print('stage1.png bytes=%d' % n)
 
