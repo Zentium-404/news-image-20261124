@@ -1,11 +1,10 @@
-# main.py — "The World on One Page", the news of Tuesday 24 November 2026
-# compressed into a single 1024x1024 broadsheet.
+# main.py — "The World on One Page": the news of Tuesday 24 November 2026
+# set as a 1024x1024 broadsheet, drawn by pure Python from first principles.
 #
-# Everything is drawn from scratch: an RGB byte buffer, a span rasteriser for
-# polygons, a hand-rolled TrueType outline reader, and a minimal PNG encoder.
-# Glyph outlines and Natural Earth coastline rings ship as compressed blobs in
-# gen/blobs.py so the program never touches the network. Python 3 standard
-# library only.
+# No images, no libraries: the program rasterises its own type (a TrueType
+# outline reader over a compressed DejaVu subset in gen/blobs.py), its own
+# coastlines (Natural Earth 110m land rings, same blob file), and its own PNG
+# (zlib + CRC32). Two runs produce byte-identical output.
 
 import base64
 import gzip
@@ -70,7 +69,7 @@ def panel(xa, ya, xb, yb, col):
 
 
 def span_fill(vertices, col):
-    """Rasterise a polygon with the even-odd (crossing) rule, one span per row."""
+    """Even-odd span rasteriser: one horizontal span per scanline crossing."""
     n = len(vertices)
     if n < 3:
         return
