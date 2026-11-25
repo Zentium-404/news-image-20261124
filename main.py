@@ -482,6 +482,7 @@ def open_map_blob(b64):
 
 from wire24 import (BANNER, COLUMNS, COLOPHON, EDITION_LINE,
                      LEADS, TALLY, WIRE)
+from checkpage import audit as audit_page
 
 
 def to_page(lon, lat, centre_x, centre_y, box_w, box_h):
@@ -526,6 +527,7 @@ def compose():
     else:
         register_font('sans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
     face = fonts['sans']
+    audit_page(face, measure, fold)
 
     # masthead
     banner_w = measure(face, BANNER, 34, 1.0)

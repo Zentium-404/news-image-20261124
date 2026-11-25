@@ -6,8 +6,8 @@
 BANNER = 'THE WORLD ON ONE PAGE'
 EDITION_LINE = 'DAY 328 OF 2026 · EVERY STORY DATED TUESDAY 24 NOV'
 
-TALLY = ('35 STORIES · EUROPE 6 · MIDDLE EAST 4 · ASIA 8 · AFRICA 3 · '
-         'AMERICAS 8 · OCEANIA 4 · GLOBAL 2')
+TALLY = ('35 STORIES · EUROPE 7 · MIDDLE EAST 5 · ASIA 8 · AFRICA 3 · '
+         'AMERICAS 7 · OCEANIA 3 · GLOBAL 2')
 
 # Four lead stories: big figure, region tag, headline, body copy, and the
 # (lon, lat) pin for its mini map.
