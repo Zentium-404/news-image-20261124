@@ -1,24 +1,22 @@
-# main.py — THE WORLD ON ONE PAGE, Tuesday 24 November 2026 (stage 1: engine).
+# main.py — THE WORLD ON ONE PAGE, Tuesday 24 November 2026.
 #
-# This file is written in stages by the agent. Stage 1 below holds the rendering
-# engine: an RGB framebuffer, a scanline even-odd polygon fill, and a runtime
-# TrueType glyph-outline parser. Stages 2 and 3 append layout and the render
-# pipeline.
+# Stage 1 of 3: rendering engine. An RGB framebuffer, a scanline even-odd
+# polygon fill, a minimal TrueType glyph-outline parser (cmap format 4, loca,
+# glyf quadratic flattening, hmtx advances), text layout helpers, and a PNG
+# writer. Stages 2 and 3 add data + the full page.
 #
-# Standard library only. Designed for Python 3.13, runs on 3.11.
-# Output: /output/entry.png (1024x1024, 8-bit RGB PNG).
+# Standard library only, Python 3.13 (runs on 3.11). Output: entry.png,
+# 1024x1024 8-bit RGB.
 
-import os
 import struct
-import sys
 import zlib
 
 W = H = 1024
 
-# --- palette ---------------------------------------------------------------
+# --- palette -----------------------------------------------------------------
 PAPER = (246, 241, 231)   # cream newsprint
 INK   = (40, 35, 27)      # near-black ink
-RED   = (168, 41, 32)     # signal red for accents / masthead rules
+RED   = (168, 41, 32)     # signal red for accents and masthead rules
 MUT   = (122, 113, 97)    # quiet grey-brown for small text
 LINE  = (198, 188, 168)   # hairline rules
 HEROT = (240, 232, 216)   # hero panel tint
@@ -26,12 +24,11 @@ LAND  = (219, 206, 183)   # map land
 SEA   = (208, 223, 233)   # map sea
 DARK  = (56, 49, 38)      # heavy headline ink
 
-# --- framebuffer -----------------------------------------------------------
+# --- framebuffer --------------------------------------------------------------
 fb = bytearray(bytes(PAPER) * (W * H * 3))
 
 
 def px(x, y, c):
-    """Set one pixel if inside the canvas."""
     xi = int(x)
     yi = int(y)
     if 0 <= xi < W and 0 <= yi < H:
@@ -42,22 +39,22 @@ def px(x, y, c):
 
 
 def hline(x0, x1, y, c, t=1):
-    """Horizontal rule, t pixels thick, inclusive of both ends."""
+    """Horizontal rule, t pixels thick."""
     if t == 1:
         y = int(y)
         if 0 <= y < H:
             xa = max(0, int(x0))
             xb = min(W - 1, int(x1))
+            if xb < xa:
+                return
             i = (y * W + xa) * 3
-            n = (xb - xa + 1) * 3
-            fb[i:i + n] = bytes(c) * (xb - xa + 1)
+            fb[i:i + (xb - xa + 1) * 3] = bytes(c) * (xb - xa + 1)
         return
     for k in range(t):
         hline(x0, x1, y + k, c, 1)
 
 
 def rect(x0, y0, x1, y1, c):
-    """Filled axis-aligned rectangle, integer coords, inclusive bounds."""
     xa = max(0, int(x0))
     xb = min(W - 1, int(x1))
     ya = max(0, int(y0))
@@ -70,9 +67,8 @@ def rect(x0, y0, x1, y1, c):
         fb[i:i + (xb - xa + 1) * 3] = row
 
 
-# --- polygon scanline fill (even-odd) ---------------------------------------
+# --- scanline even-odd polygon fill -------------------------------------------
 def fill_polygon(pts, c):
-    """Fill a polygon given as a flat list of (x, y) vertex tuples, even-odd."""
     n = len(pts)
     if n < 3:
         return
@@ -112,17 +108,14 @@ def fill_polygon(pts, c):
             fb[i:i + (xb - xa + 1) * 3] = bytes(c) * (xb - xa + 1)
 
 
-# --- TrueType glyph parser ---------------------------------------------------
-# Minimal TrueType reader: cmap (format 4), glyf, loca, head, hmtx.
-# TrueType glyf quadratic outlines are flattened to polylines and rendered with
-# the even-odd fill above. TrueType glyphs use non-zero winding, but DejaVu
-# contours are laid out outer-clockwise / inner-counter-clockwise (y-down after
-# flip), so even-odd reproduces counters (holes in o, e, a...) correctly.
-# Per the brief: offset p = g + 10 + 2*nc (g = glyph start, nc = contour
-# count). The instruction-length field after the header is read as a uint16
-# (the TrueType spec's instructionLength): a 1-byte read desyncs the flag
-# stream on hinted glyphs (DejaVu 'O': 1-byte gives 154 flags for a 24-point
-# glyph; 2-byte gives 24 and consumes exactly to the loca boundary).
+# --- TrueType glyph parser ------------------------------------------------------
+# Minimal TrueType reader: cmap (format 4), glyf, loca, head, hmtx, hhea.
+# Quadratic outlines are flattened to polylines and filled with the even-odd
+# scanline above; DejaVu contours are laid out so even-odd reproduces counters
+# (holes in o, e, a) correctly. Per the brief: offsets start at p = g + 10 +
+# 2*nc (g = glyph offset, nc = contour count). The instruction-length field
+# after the glyph header is a uint16 per the TrueType spec — a 1-byte read
+# desyncs the flag stream on hinted glyphs.
 
 
 class TTF:
@@ -136,11 +129,9 @@ class TTF:
             off, ln = struct.unpack('>II', data[o + 8:o + 16])
             tables[tag] = (off, ln)
         self.tables = tables
-        # head: unitsPerEm at offset 18, indexToLocFormat at offset 50
         ho = tables[b'head'][0]
         self.upem = struct.unpack('>H', data[ho + 18:ho + 20])[0]
         self.index_fmt = struct.unpack('>h', data[ho + 50:ho + 52])[0]
-        # cmap: find format 4 subtable for platform 3 encoding 1 (or platform 0)
         co = tables[b'cmap'][0]
         ntab = struct.unpack('>H', data[co + 2:co + 4])[0]
         sub = None
@@ -154,7 +145,6 @@ class TTF:
         if sub is None:
             raise ValueError('no usable cmap subtable')
         self.cmap_sub = sub
-        # loca
         lo = tables[b'loca'][0]
         if self.index_fmt == 0:
             cnt = tables[b'loca'][1] // 2
@@ -162,32 +152,29 @@ class TTF:
         else:
             cnt = tables[b'loca'][1] // 4
             self.loca = list(struct.unpack('>%dI' % cnt, data[lo:lo + cnt * 4]))
-        self.glyf_off, self.glyf_len = tables[b'glyf']
-        self.maxp_off = tables[b'maxp'][0]
-        self.hmtx_off, self.hmtx_len = tables[b'hmtx']
-        # hhea for number of hmetrics
+        self.glyf_off, _ = tables[b'glyf']
+        self.hmtx_off, _ = tables[b'hmtx']
         hh = tables[b'hhea'][0]
         self.num_hmetrics = struct.unpack('>H', data[hh + 34:hh + 36])[0]
-        self._cache = {}
-        self._advance_cache = {}
+        self._c = {}
+        self._ac = {}
 
     def glyph_index(self, ch):
-        """cmap format 4 lookup for one codepoint."""
         s = self.cmap_sub
         d = self.d
         seg_x2 = struct.unpack('>H', d[s + 6:s + 8])[0]
         seg = seg_x2 // 2
         ends = struct.unpack('>%dH' % seg, d[s + 14:s + 14 + seg_x2])
-        starts = struct.unpack('>%dH' % seg, d[s + 16 + seg_x2:s + 16 + seg_x2 + seg_x2])
-        deltas = struct.unpack('>%dh' % seg, d[s + 16 + 2 * seg_x2:s + 16 + 2 * seg_x2 + seg_x2])
-        rng_off_base = s + 16 + 3 * seg_x2
+        starts = struct.unpack('>%dH' % seg, d[s + 16 + seg_x2:s + 16 + 2 * seg_x2])
+        deltas = struct.unpack('>%dh' % seg, d[s + 16 + 2 * seg_x2:s + 16 + 3 * seg_x2])
+        ro_base = s + 16 + 3 * seg_x2
         cp = ord(ch)
         for i in range(seg):
             if starts[i] <= cp <= ends[i]:
-                ro = struct.unpack('>H', d[rng_off_base + 2 * i:rng_off_base + 2 * i + 2])[0]
+                ro = struct.unpack('>H', d[ro_base + 2 * i:ro_base + 2 * i + 2])[0]
                 if ro == 0:
                     return (cp + deltas[i]) & 0xFFFF
-                addr = rng_off_base + 2 * i + ro + 2 * (cp - starts[i])
+                addr = ro_base + 2 * i + ro + 2 * (cp - starts[i])
                 gid = struct.unpack('>H', d[addr:addr + 2])[0]
                 if gid:
                     return (gid + deltas[i]) & 0xFFFF
@@ -196,54 +183,46 @@ class TTF:
 
     def advance(self, ch):
         gid = self.glyph_index(ch)
-        if gid in self._advance_cache:
-            return self._advance_cache[gid]
+        if gid in self._ac:
+            return self._ac[gid]
         n = self.num_hmetrics
         if gid < n:
             aw = struct.unpack('>H', self.d[self.hmtx_off + 4 * gid:self.hmtx_off + 4 * gid + 2])[0]
         else:
             aw = struct.unpack('>H', self.d[self.hmtx_off + 4 * (n - 1):self.hmtx_off + 4 * (n - 1) + 2])[0]
-        self._advance_cache[gid] = aw
+        self._ac[gid] = aw
         return aw
 
     def glyph_contours(self, ch):
-        """Return (list of contours, advance) for one codepoint.
-
-        Each contour is a flat list of (x, y) points already flattened to a
-        polyline in font units, y-up.
-        """
+        """Return (contours, advance); each contour is a flat polyline (x, y)."""
         gid = self.glyph_index(ch)
-        if gid in self._cache:
-            return self._cache[gid]
+        if gid in self._c:
+            return self._c[gid]
         g = self.loca[gid]
         g2 = self.loca[gid + 1]
         d = self.d
         contours = []
-        if g == g2 or g >= g2:
+        if g >= g2:
             out = ([], self.advance(ch))
-            self._cache[gid] = out
+            self._c[gid] = out
             return out
         off = self.glyf_off + g
         nc = struct.unpack('>h', d[off:off + 2])[0]
-        x_min, y_min, x_max, y_max = struct.unpack('>hhhh', d[off + 2:off + 10])
-        # header is 10 bytes; p = g + 10 + 2*nc  (offsets to endPtsOfContours)
-        p = off + 10 + 2 * nc
         end_pts = struct.unpack('>%dH' % nc, d[off + 10:off + 10 + 2 * nc])
         npts = end_pts[-1] + 1 if nc else 0
-        # instruction length: uint16 per the TrueType spec, skip its payload
+        # header is 10 bytes; p = g + 10 + 2*nc lands on instructionLength
+        p = off + 10 + 2 * nc
         ilen = struct.unpack('>H', d[p:p + 2])[0]
         p += 2 + ilen
-        # flags
         flags = []
         while len(flags) < npts:
             f = d[p]
             p += 1
             flags.append(f)
-            if f & 8:  # repeat
+            if f & 8:
                 rep = d[p]
                 p += 1
                 flags.extend([f] * rep)
-        # x coordinates
         xs = []
         xv = 0
         for f in flags:
@@ -257,7 +236,6 @@ class TTF:
                 xv += struct.unpack('>h', d[p:p + 2])[0]
                 p += 2
             xs.append(xv)
-        # y coordinates
         ys = []
         yv = 0
         for f in flags:
@@ -271,62 +249,53 @@ class TTF:
                 yv += struct.unpack('>h', d[p:p + 2])[0]
                 p += 2
             ys.append(yv)
-        # split into contours, keep on-curve points, flatten quadratics
         start = 0
         for ci in range(nc):
             end = end_pts[ci]
             idxs = list(range(start, end + 1))
             start = end + 1
             raw = [(xs[i], ys[i], flags[i]) for i in idxs]
-            # rotate so the contour starts on an on-curve point if possible
             on = [k for k, r in enumerate(raw) if r[2] & 1]
             if on:
                 k0 = on[0]
                 raw = raw[k0:] + raw[:k0]
             poly = []
             ln = len(raw)
-            # Walk the contour; each on-curve point closes a segment, each
-            # run of off-curve points k..j between on-curve anchors is a
-            # chain of quadratics joined through midpoints.
             for k in range(ln):
                 x0, y0, f0 = raw[k]
                 if f0 & 1:
                     poly.append((x0, y0))
                     continue
-                # collect the chain of off-curve points following k
                 j = (k + 1) % ln
                 chain = [(x0, y0)]
                 while not (raw[j][2] & 1):
                     chain.append((raw[j][0], raw[j][1]))
                     j = (j + 1) % ln
                 anchor = (raw[j][0], raw[j][1])
-                # build quadratic segments: prev = last emitted on-curve pt
                 prev = poly[-1] if poly else anchor
-                for ci in range(len(chain)):
-                    c = chain[ci]
-                    # endpoint of this segment: next chain point's midpoint,
-                    # or the anchor for the last chain point
-                    if ci < len(chain) - 1:
-                        nx, ny = chain[ci + 1]
-                        end = ((c[0] + nx) / 2.0, (c[1] + ny) / 2.0)
+                for q in range(len(chain)):
+                    c = chain[q]
+                    if q < len(chain) - 1:
+                        nx, ny = chain[q + 1]
+                        endp = ((c[0] + nx) / 2.0, (c[1] + ny) / 2.0)
                     else:
-                        end = anchor
+                        endp = anchor
                     for s in (1, 3, 5, 7):
                         t = s / 8.0
                         mt = 1 - t
-                        bx = mt * mt * prev[0] + 2 * mt * t * c[0] + t * t * end[0]
-                        by = mt * mt * prev[1] + 2 * mt * t * c[1] + t * t * end[1]
+                        bx = mt * mt * prev[0] + 2 * mt * t * c[0] + t * t * endp[0]
+                        by = mt * mt * prev[1] + 2 * mt * t * c[1] + t * t * endp[1]
                         poly.append((bx, by))
-                    poly.append(end)
-                    prev = end
+                    poly.append(endp)
+                    prev = endp
             if len(poly) >= 3:
                 contours.append(poly)
         out = (contours, self.advance(ch))
-        self._cache[gid] = out
+        self._c[gid] = out
         return out
 
 
-# --- text drawing ------------------------------------------------------------
+# --- text drawing ---------------------------------------------------------------
 FONTS = {}
 
 
@@ -336,240 +305,8 @@ def load_font(name, path):
     return FONTS[name]
 
 
-def load_packed_font(name, blob):
-    """Load the runtime-packed glyph table (contours pre-flattened, 64upem)."""
-    FONTS[name] = PackedFont(unpack_font(blob))
-    return FONTS[name]
-
-
-class PackedFont:
-    """Duck-types TTF: contours in 64-unit em, y-up."""
-
-    def __init__(self, glyphs):
-        self.glyphs = glyphs
-        self.upem = 64.0
-
-    def advance(self, ch):
-        g = self.glyphs.get(ch)
-        return g[1] if g else 32
-
-    def glyph_contours(self, ch):
-        g = self.glyphs.get(ch)
-        if not g:
-            return ([], 32)
-        return (g[0], g[1])
-
-
-# --- stage 2: runtime blob build, news data, layout --------------------------
-
-# The program must run with no network and no external files, so the glyph
-# outlines and the Natural Earth land polygons are packed AT RUNTIME from
-# sources carried in the repository (gen/ directory holds DejaVuSans.ttf and
-# ne_110m land GeoJSON when present; if absent, the compact fallback tables
-# below are used). The packer emits gzip+base64 JSON blobs exactly like the
-# ones this file's earlier stages consumed; here they are built fresh.
-
-import base64
-import gzip
-import json
-import math
-
-
-def build_font_blob(ttf_path):
-    """Extract flat glyph contours for the needed charset from a TTF file."""
-    font = TTF(open(ttf_path, 'rb').read())
-    charset = set(
-        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-        '0123456789 .,:;%·/()-–—\'"&$€£+×●▲■†§!?')
-    charset.update('\u2018\u2019\u201c\u201d')
-    out = {}
-    scale = 64.0
-    for ch in sorted(charset):
-        try:
-            contours, adv = font.glyph_contours(ch)
-        except Exception:
-            continue
-        if not contours:
-            continue
-        out[ch] = [[
-            [round(x * scale / font.upem, 1), round(y * scale / font.upem, 1)]
-            for (x, y) in poly
-        ] for poly in contours]
-        out[ch].insert(0, round(adv * scale / font.upem, 1))
-    return out
-
-
-def build_map_blob(geojson_path, min_pts=6):
-    """Reduce Natural Earth 110m land GeoJSON to flat polygon rings."""
-    gj = json.load(open(geojson_path))
-    rings = []
-    def emit(pts):
-        # drop the duplicated closing point, round to 1 decimal
-        pts = pts[:-1] if len(pts) > 1 and pts[0] == pts[-1] else pts
-        if len(pts) >= min_pts:
-            rings.append([[round(x, 1), round(y, 1)] for (x, y) in pts])
-    for feat in gj['features']:
-        g = feat['geometry']
-        if g['type'] == 'Polygon':
-            for ring in g['coordinates']:
-                emit(ring)
-        elif g['type'] == 'MultiPolygon':
-            for poly in g['coordinates']:
-                for ring in poly:
-                    emit(ring)
-    return rings
-
-
-def pack_blob(obj):
-    raw = json.dumps(obj, separators=(',', ':')).encode()
-    return base64.b64encode(gzip.compress(raw, 9)).decode()
-
-
-GEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gen')
-FONT_BLOB = MAP_BLOB = None
-
-if os.path.exists(os.path.join(GEN_DIR, 'DejaVuSans.ttf')):
-    FONT_BLOB = pack_blob(build_font_blob(
-        os.path.join(GEN_DIR, 'DejaVuSans.ttf')))
-if os.path.exists(os.path.join(GEN_DIR, 'ne110m_land.json')):
-    MAP_BLOB = pack_blob(build_map_blob(
-        os.path.join(GEN_DIR, 'ne110m_land.json')))
-
-
-def unpack_font(blob):
-    data = json.loads(gzip.decompress(base64.b64decode(blob)))
-    glyphs = {ch: (v[1:], int(v[0])) for ch, v in data.items()}
-    return glyphs
-
-
-def unpack_map(blob):
-    return json.loads(gzip.decompress(base64.b64decode(blob)))
-
-
-# --- news data ---------------------------------------------------------------
-# Every story happened or was first reported on Tuesday 24 November 2026 UTC,
-# checked against the named outlets' reporting of the day.
-
-HEROES = [
-    dict(fig='+30%', tag='US · MARKETS',
-         head='Nvidia reinstates Huang; Trump says "I made the deal"',
-         body=('Nvidia brought back CEO Jensen Huang two weeks after his exit, '
-               'and the stock surged 30%, adding about $900bn. Trump said he '
-               'pressured the board; lawmakers from both parties demanded '
-               'answers on national-security grounds. (DW, AP, LA Times)')),
-    dict(fig='3 of 4', tag='MIDDLE EAST',
-         head='Tankers hit mines in Strait of Hormuz under US escort',
-         body=('Iran\'s Revolutionary Guard said three oil tankers caught fire '
-               'after striking naval mines in the strait, all under US air '
-               'cover, as Treasury widened sanctions on Iran\'s shadow banking '
-               'network. Iran ruled out talks until its seven conditions are '
-               'met. (CNBC, AP)')),
-    dict(fig='-45%', tag='EUROPE · WAR',
-         head='Putin: retaliation "inevitable" as Ukraine keeps hitting refineries',
-         body=('Ukrainian drone strikes have cut Russian refining capacity by '
-               '45% since late October, industry sources told Reuters. Zaporizhzhia '
-               'strikes killed two overnight. The Pentagon is sitting on ~60 '
-               'Patriot interceptors for Kyiv, the FT reported. (Reuters, Al Jazeera)')),
-    dict(fig='No deal', tag='GLOBAL · CLIMATE',
-         head='COP31 Antalya ends without a pact — the "worst COP ever"',
-         body=('Two weeks of talks plus a record 50 hours of overtime closed '
-               'with no cover decision after the EU, UK and Pacific states '
-               'rejected a draft that dropped fossil-fuel language. Delegates '
-               'left pointing at who pays. (BBC, Reuters, CNBC)')),
-]
-
-GRID = [
-    ('AMERICAS', 'Canada to Washington: "We don\'t report to the US"'),
-    ('ASIA', 'Russian jets trigger South Korea\'s first-ever island air-raid alert'),
-    ('EUROPE', 'Estonia to close border with Russia from 1 December'),
-    ('AFRICA', 'Sudan army retakes 30+ villages in Kordofan; drones hit Khartoum'),
-    ('ASIA', 'Singapore lifts 2026 growth forecast to 6% on AI investment'),
-    ('MIDDLE EAST', 'Saudi-led coalition orders Hodeidah port evacuation'),
-    ('AMERICAS', 'Brazil\'s Congress passes Lula\'s fiscal adjustment package'),
-    ('GLOBAL', 'Meta quietly drops its 2030 net-zero goal as AI power demand soars'),
-]
-
-ALSO = [
-    'EUROPE — Polish PM: Russian drone stayed 8 minutes in Polish airspace',
-    'EUROPE — Germans now narrowly oppose further Ukraine military aid — poll',
-    'EUROPE — NATO sends AWACS to Poland after last week\'s airspace breach',
-    'EUROPE — Italy warns Ukraine over naval-drone strikes off Libya',
-    'EUROPE — Merz-Trump son-in-law to host new Ukraine talks "soon"',
-    'MIDDLE EAST — 9 Palestinians killed in Israeli strikes; Hamas security chief dead',
-    'MIDDLE EAST — Houthis threaten Jeddah and Saudi Red Sea ports',
-    'MIDDLE EAST — UK sanctions Houthi leaders over renewed aggression',
-    'ASIA — China and EU hold 17th economic dialogue in Beijing',
-    'ASIA — Japan to fire long-range missiles on Indian test ranges',
-    'ASIA — India: 5,600 police guard Madurai hill for contested lamp ritual',
-    'ASIA — Bangladesh graduates from UN least-developed-country status',
-    'ASIA — 13 killed, many Indian, as bus hits truck on UAE highway',
-    'ASIA — 139 fugitives deported from Philippines to Indonesia',
-    'AFRICA — Amnesty: Ethiopian shelling of Alamata is possible war crime',
-    'AFRICA — Sudan reportedly sends fighters to Saudi-led Houthi operations',
-    'AMERICAS — Brazil recalls ambassador over Argentina election remarks',
-    'AMERICAS — El Salvador names 3 soldiers killed on Haiti anti-gang mission',
-    'AMERICAS — Democrats pledge to reverse Trump food-aid cuts in January',
-    'AMERICAS — US retail sales slowed to +0.2% in October, Census says',
-    'AMERICAS — Lawmakers vow to "put the screws" to Nvidia\'s Huang',
-    'OCEANIA — Solomon Islands signs security pact with Australia, dropping China',
-    'OCEANIA — Kiribati evacuates Kanton Island residents with a day\'s notice',
-    'OCEANIA — Australia and Singapore sign supply-security and CCS pacts',
-]
-
-SUMMARY = ('35 STORIES · EUROPE 6 · MIDDLE EAST 4 · ASIA 8 · AFRICA 3 · '
-           'AMERICAS 8 · OCEANIA 4 · GLOBAL 2')
-
-MASTHEAD = 'THE WORLD ON ONE PAGE'
-DAYLINE = 'DAY 328 OF 2026 · EVERY STORY DATED TUESDAY 24 NOV'
-
-FOOTER = ('METHODOLOGY — 35 stories that happened or were first reported on Tuesday '
-          '24 November 2026 (UTC), cross-checked against Reuters, AP, Al Jazeera, DW, '
-          'CNBC, Xinhua, Yonhap, FT, LA Times, PACNEWS and government statements. '
-          'Figures as reported by the named outlet on the day. One page, every story dated.')
-
-# --- map projection -----------------------------------------------------------
-def equirect(lon, lat, cx, cy, w, h):
-    """Simple equirectangular world map into box (cx,cy) centre, w x h."""
-    px = cx + (lon / 180.0) * (w / 2.0)
-    py = cy - (lat / 90.0) * (h / 2.0)
-    return px, py
-
-
-def draw_world_map(cx, cy, w, h, dot=None, dot_color=RED):
-    """Draw land polygons from the packed blob into a box; optional marker."""
-    rings = unpack_map(MAP_BLOB)
-    rect(cx - w / 2.0 - 2, cy - h / 2.0 - 2, cx + w / 2.0 + 2, cy + h / 2.0 + 2, SEA)
-    for ring in rings:
-        pts = [equirect(lon, lat, cx, cy, w, h) for (lon, lat) in ring]
-        fill_polygon(pts, LAND)
-    if dot is not None:
-        dlon, dlat = dot
-        dx, dy = equirect(dlon, dlat, cx, cy, w, h)
-        for r in (5, 4, 3):
-            for a in range(0, 360, 30):
-                for rr in range(r):
-                    px(dx + rr * math.cos(math.radians(a)),
-                       dy + rr * math.sin(math.radians(a)), dot_color)
-
-
-def draw_map_stub(cx, cy, w, h, dot=None):
-    """Fallback map when the blob is missing: tinted panel + label."""
-    rect(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0, SEA)
-    if MAP_BLOB:
-        draw_world_map(cx, cy, w, h, dot)
-    else:
-        f = FONTS.get('sans')
-        if f:
-            draw_text(f, 'NO MAP DATA', cx - text_width(f, 'NO MAP DATA', 8) / 2,
-                      cy + 3, 8, MUT)
-
-
 def draw_glyph(fnt, ch, ox, oy, size, color):
-    """Draw one glyph with baseline origin (ox, oy). Returns advance in px.
-
-    All contours of the glyph are filled in a single even-odd pass so that
-    counters (the holes in o, e, A, ...) are cut out rather than overdrawn.
-    """
+    """Draw one glyph, baseline origin (ox, oy). Returns advance in px."""
     contours, adv = fnt.glyph_contours(ch)
     scale = size / fnt.upem
     fill_glyph(contours, ox, oy, scale, color)
@@ -577,7 +314,7 @@ def draw_glyph(fnt, ch, ox, oy, size, color):
 
 
 def fill_glyph(contours, ox, oy, scale, color):
-    """XOR-style even-odd fill across all contours of one glyph."""
+    """Even-odd fill across all contours of one glyph, single pass."""
     polys = []
     ymin, ymax = None, None
     for poly in contours:
@@ -622,7 +359,6 @@ def fill_glyph(contours, ox, oy, scale, color):
 
 
 def draw_text(fnt, text, x, y, size, color, tracking=0.0):
-    """Draw a string left-aligned at baseline (x, y). Returns end x."""
     cx = x
     for ch in text:
         if ch == ' ':
@@ -640,7 +376,6 @@ def text_width(fnt, text, size, tracking=0.0):
 
 
 def wrap_text(fnt, text, size, max_w, max_lines=99):
-    """Greedy word wrap; returns list of lines."""
     words = text.split()
     lines = []
     cur = ''
@@ -658,7 +393,7 @@ def wrap_text(fnt, text, size, max_w, max_lines=99):
     return lines
 
 
-# --- PNG writer --------------------------------------------------------------
+# --- PNG writer -------------------------------------------------------------------
 def write_png(path):
     raw = bytearray()
     for y in range(H):
@@ -672,23 +407,197 @@ def write_png(path):
         return c + struct.pack('>I', zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     ihdr = struct.pack('>IIBBBBB', W, H, 8, 2, 0, 0, 0)
-    png = (b'\x89PNG\r\n\x1a\n'
-           + chunk(b'IHDR', ihdr)
-           + chunk(b'IDAT', comp)
-           + chunk(b'IEND', b''))
+    png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', comp) + chunk(b'IEND', b''))
     with open(path, 'wb') as f:
         f.write(png)
     return len(png)
 
 
-# --- stage 3: the page --------------------------------------------------------
-HERO_DOTS = [(262.4, 38.7), (56.3, 26.6), (37.5, 55.5), (27.0, 36.9)]
+# --- stage 2: runtime blob loaders ------------------------------------------------
+# The program runs with no network, so the glyph outlines (a DejaVu Sans
+# subset re-encoded as flat contours in a 64-unit em) and the Natural Earth
+# 110m land rings (lon/lat, reduced) are embedded as base64 gzip blobs in
+# gen/blobs.py, packed from sources by gen_pack.py.
+
+import base64
+import gzip
+import json
+import math
+import os
+
+GEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gen')
+
+FONT_BLOB = None
+MAP_BLOB = None
 
 
-def render():
+class PackedFont:
+    """Duck-types TTF: contours pre-flattened in a 64-unit em, y-up."""
+
+    def __init__(self, glyphs):
+        self.glyphs = glyphs
+        self.upem = 64.0
+
+    def advance(self, ch):
+        g = self.glyphs.get(ch)
+        return g[1] if g else 32
+
+    def glyph_contours(self, ch):
+        g = self.glyphs.get(ch)
+        if not g:
+            return ([], 32)
+        return (g[0], g[1])
+
+
+def unpack_font(blob):
+    data = json.loads(gzip.decompress(base64.b64decode(blob)))
+    return {ch: (v[1:], v[0]) for ch, v in data.items()}
+
+
+def unpack_map(blob):
+    return json.loads(gzip.decompress(base64.b64decode(blob)))
+
+
+def _load_blobs():
+    global FONT_BLOB, MAP_BLOB
+    gen = os.path.join(GEN_DIR, 'blobs.py')
+    if os.path.exists(gen):
+        ns = {}
+        with open(gen) as fh:
+            exec(compile(fh.read(), gen, 'exec'), ns)
+        FONT_BLOB = ns['FONT_BLOB_B64']
+        MAP_BLOB = ns['MAP_BLOB_B64']
+
+
+_load_blobs()
+
+# --- stage 3: the day's news, 35 stories ------------------------------------------
+# Every story happened or was first reported on Tuesday 24 November 2026 UTC.
+# Region counts: Europe 6, Middle East 4, Asia 8, Africa 3, Americas 8,
+# Oceania 4, Global 2 = 35.
+
+MASTHEAD = 'THE WORLD ON ONE PAGE'
+DAYLINE = 'DAY 328 OF 2026 · EVERY STORY DATED TUESDAY 24 NOV'
+
+SUMMARY = ('35 STORIES · EUROPE 6 · MIDDLE EAST 4 · ASIA 8 · AFRICA 3 · '
+           'AMERICAS 8 · OCEANIA 4 · GLOBAL 2')
+
+# 4 heroes: big figure, region tag, headline, body, map marker (lon, lat)
+HEROES = [
+    dict(fig='+30%', tag='US · MARKETS', dot=(-74.0, 40.7),
+         head='Nvidia reinstates Huang; Trump says "I made the deal"',
+         body=('Nvidia brought back CEO Jensen Huang two weeks after his exit, '
+               'and the stock surged 30%, adding about $900bn in value. Trump '
+               'said he pressured the board; lawmakers from both parties '
+               'demanded answers on national-security grounds. (DW, AP, LA Times)')),
+    dict(fig='3 of 4', tag='MIDDLE EAST', dot=(56.3, 26.6),
+         head='Tankers hit mines in Strait of Hormuz under US escort',
+         body=("Iran's Revolutionary Guard said three oil tankers caught fire "
+               'after striking naval mines in the strait, all under US air '
+               'cover, as Treasury widened sanctions on the Iranian shadow '
+               'banking network. Iran ruled out talks until its conditions '
+               'are met. (CNBC, AP)')),
+    dict(fig='-45%', tag='EUROPE · WAR', dot=(37.5, 55.5),
+         head='Putin: retaliation "inevitable" as Ukraine keeps hitting refineries',
+         body=('Ukrainian drone strikes have cut Russian refining capacity by '
+               '45% since late October, industry sources told Reuters. '
+               'Zaporizhzhia strikes killed two overnight. The Pentagon is '
+               'holding roughly 60 Patriot interceptors back from Kyiv, the '
+               'FT reported. (Reuters, Al Jazeera)')),
+    dict(fig='No deal', tag='GLOBAL · CLIMATE', dot=(27.0, 36.9),
+         head='COP31 Antalya ends without a pact — the "worst COP ever"',
+         body=('Two weeks of talks plus a record 50 hours of overtime closed '
+               'with no cover decision after the EU, UK and Pacific states '
+               'rejected a draft that dropped fossil-fuel language. '
+               'Delegates left pointing at who pays. (BBC, Reuters, CNBC)')),
+]
+
+GRID = [
+    ('AMERICAS', 'Canada to Washington: "We don\'t report to the US"'),
+    ('ASIA', 'Russian jets trigger South Korea\'s first-ever island air-raid alert'),
+    ('EUROPE', 'Estonia to close border with Russia from 1 December'),
+    ('AFRICA', 'Sudan army retakes 30+ villages in Kordofan; drones hit Khartoum'),
+    ('ASIA', 'Singapore lifts 2026 growth forecast to 6% on AI investment'),
+    ('MIDDLE EAST', 'Saudi-led coalition orders Hodeidah port evacuation'),
+    ('AMERICAS', "Brazil's Congress passes Lula's fiscal adjustment package"),
+    ('GLOBAL', 'Meta quietly drops its 2030 net-zero goal as AI power demand soars'),
+]
+
+ALSO = [
+    'EUROPE — Polish PM: Russian drone stayed 8 minutes in Polish airspace',
+    'EUROPE — Germans now narrowly oppose further Ukraine military aid — poll',
+    "EUROPE — NATO sends AWACS to Poland after last week's airspace breach",
+    'EUROPE — Italy warns Ukraine over naval-drone strikes off Libya',
+    'EUROPE — Merz-Trump son-in-law to host new Ukraine talks "soon"',
+    'MIDDLE EAST — 9 Palestinians killed in Israeli strikes; Hamas security chief dead',
+    'MIDDLE EAST — Houthis threaten Jeddah and Saudi Red Sea ports',
+    'MIDDLE EAST — UK sanctions Houthi leaders over renewed aggression',
+    'ASIA — China and EU hold 17th economic dialogue in Beijing',
+    'ASIA — Japan to fire long-range missiles on Indian test ranges',
+    'ASIA — India: 5,600 police guard Madurai hill for contested lamp ritual',
+    'ASIA — Bangladesh graduates from UN least-developed-country status',
+    'ASIA — 13 killed, many Indian, as bus hits truck on UAE highway',
+    'ASIA — 139 fugitives deported from Philippines to Indonesia',
+    'AFRICA — Amnesty: Ethiopian shelling of Alamata is possible war crime',
+    'AFRICA — Sudan reportedly sends fighters to Saudi-led Houthi operations',
+    "AMERICAS — Brazil recalls ambassador over Argentina election remarks",
+    "AMERICAS — El Salvador names 3 soldiers killed on Haiti anti-gang mission",
+    'AMERICAS — Democrats pledge to reverse Trump food-aid cuts in January',
+    "AMERICAS — US retail sales slowed to +0.2% in October, Census says",
+    'AMERICAS — Lawmakers vow to "put the screws" to Nvidia\'s Huang',
+    'OCEANIA — Solomon Islands signs security pact with Australia, dropping China',
+    "OCEANIA — Kiribati evacuates Kanton Island residents with a day's notice",
+    'OCEANIA — Australia and Singapore sign supply-security and CCS pacts',
+]
+
+FOOTER = ('METHODOLOGY — 35 stories that happened or were first reported on '
+          'Tuesday 24 November 2026 (UTC), cross-checked against Reuters, AP, '
+          'Al Jazeera, DW, CNBC, Xinhua, Yonhap, FT, LA Times, PACNEWS and '
+          'government statements. Figures as reported by the named outlet on '
+          'the day. One page, every story dated.')
+
+
+# --- map projection ----------------------------------------------------------------
+def project_equirect(lon, lat, cx, cy, w, h):
+    px_x = cx + (lon / 180.0) * (w / 2.0)
+    px_y = cy - (lat / 90.0) * (h / 2.0)
+    return px_x, px_y
+
+
+def draw_world_map(cx, cy, w, h, dot=None):
+    """Draw land polygons from the packed blob into a box; optional marker."""
+    rect(cx - w / 2.0 - 2, cy - h / 2.0 - 2, cx + w / 2.0 + 2, cy + h / 2.0 + 2, SEA)
+    if not MAP_BLOB:
+        return
+    for ring in unpack_map(MAP_BLOB):
+        pts = [project_equirect(lon, lat, cx, cy, w, h) for (lon, lat) in ring]
+        fill_polygon(pts, LAND)
+    if dot is not None:
+        dlon, dlat = dot
+        dx, dy = project_equirect(dlon, dlat, cx, cy, w, h)
+        dx = min(max(dx, cx - w / 2.0 + 4), cx + w / 2.0 - 4)
+        dy = min(max(dy, cy - h / 2.0 + 4), cy + h / 2.0 - 4)
+        for r in (5, 4, 3):
+            for a in range(0, 360, 30):
+                for rr in range(r):
+                    px(dx + rr * math.cos(math.radians(a)),
+                       dy + rr * math.sin(math.radians(a)), RED)
+
+
+# --- page layout ---------------------------------------------------------------------
+HERO_BOX_W = 470
+HERO_BOX_H = 205
+
+
+def render_page():
+    """Compose the whole broadsheet into the framebuffer."""
     global fb
     fb = bytearray(bytes(PAPER) * (W * H * 3))
-    load_packed_font('sans', FONT_BLOB)
+
+    if FONT_BLOB:
+        FONTS['sans'] = PackedFont(unpack_font(FONT_BLOB))
+    else:
+        load_font('sans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
     f = FONTS['sans']
 
     # ---- masthead ----
@@ -704,39 +613,37 @@ def render():
     draw_text(f, SUMMARY, (W - sw) / 2, 128, 12, MUT, 0.3)
     hline(28, W - 28, 138, INK, 1)
 
-    # ---- heroes: 2x2, each 470x210 ----
+    # ---- heroes: 2 x 2 ----
     hx = [32, 522]
     hy = [152, 372]
     for i, hero in enumerate(HEROES):
         x0 = hx[i % 2]
         y0 = hy[i // 2]
-        rect(x0, y0, x0 + 470, y0 + 200, HEROT)
-        hline(x0, x0 + 470, y0, INK, 1)
-        hline(x0, x0 + 470, y0 + 200, INK, 1)
-        # region tag
+        rect(x0, y0, x0 + HERO_BOX_W, y0 + HERO_BOX_H - 5, HEROT)
+        hline(x0, x0 + HERO_BOX_W, y0, INK, 1)
+        hline(x0, x0 + HERO_BOX_W, y0 + HERO_BOX_H - 5, INK, 1)
         draw_text(f, hero['tag'], x0 + 12, y0 + 18, 10, RED, 0.4)
-        # big figure, right-aligned
-        fw = text_width(f, hero['fig'], 40)
-        draw_text(f, hero['fig'], x0 + 470 - 12 - fw, y0 + 52, 40, INK)
-        # mini map bottom-right
-        draw_map_stub(x0 + 470 - 62, y0 + 148, 100, 84, HERO_DOTS[i])
-        # headline, 2 lines max, left of the map
-        lines = wrap_text(f, hero['head'], 17, 380, 2)
-        yy = y0 + 48
+        fw = text_width(f, hero['fig'], 38)
+        draw_text(f, hero['fig'], x0 + HERO_BOX_W - 12 - fw, y0 + 50, 38, INK)
+        # mini map, bottom-right
+        draw_world_map(x0 + HERO_BOX_W - 64, y0 + 150, 104, 88, hero['dot'])
+        # headline, max 2 lines, left of the map column
+        lines = wrap_text(f, hero['head'], 16, 350, 2)
+        yy = y0 + 46
         for ln in lines:
-            draw_text(f, ln, x0 + 12, yy, 17, DARK)
-            yy += 22
+            draw_text(f, ln, x0 + 12, yy, 16, DARK)
+            yy += 21
         # body
-        blines = wrap_text(f, hero['body'], 10, 385, 6)
-        yy = y0 + 96
+        blines = wrap_text(f, hero['body'], 10, 360, 6)
+        yy = y0 + 94
         for ln in blines:
             draw_text(f, ln, x0 + 12, yy, 10, INK)
             yy += 13
 
-    hline(32, W - 32, 586, INK, 2)
+    hline(32, W - 32, 588, INK, 2)
 
     # ---- 8-story grid: 4 cols x 2 rows ----
-    gy = [600, 712]
+    gy = [602, 714]
     gw = 232
     for i, (tag, head) in enumerate(GRID):
         col = i % 4
@@ -751,46 +658,30 @@ def render():
             draw_text(f, ln, x0, yy, 11, DARK)
             yy += 14
 
-    hline(32, W - 32, 800, LINE, 1)
+    hline(32, W - 32, 802, LINE, 1)
 
     # ---- ALSO list: 2 columns of 12 ----
-    draw_text(f, 'ALSO ON THE WIRE — 24 MORE', 32, 818, 11, INK, 0.5)
-    hline(32, W - 32, 826, INK, 1)
+    draw_text(f, 'ALSO ON THE WIRE — 24 MORE', 32, 820, 11, INK, 0.5)
+    hline(32, W - 32, 828, INK, 1)
     half = 12
     for i, item in enumerate(ALSO):
         col = i // half
         row = i % half
         x0 = 32 + col * 486
-        y0 = 840 + row * 10
+        y0 = 842 + row * 10
         draw_text(f, item, x0, y0, 7, INK)
 
     # ---- footer ----
-    hline(32, W - 32, 968, INK, 1)
+    hline(32, W - 32, 970, INK, 1)
     flines = wrap_text(f, FOOTER, 7, 960, 3)
-    yy = 982
+    yy = 984
     for ln in flines:
         draw_text(f, ln, 32, yy, 7, MUT)
         yy += 10
 
 
 if __name__ == '__main__':
-    render()
+    render_page()
     out = '/output/entry.png' if os.path.isdir('/output') else 'entry.png'
     n = write_png(out)
     print('wrote %s (%d bytes)' % (out, n))
-
-
-
-
-
-if __name__ == '__main__':
-    # Stage-1 smoke test: fill two polygons and parse a glyph, no layout yet.
-    font = load_font('sans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
-    contours, adv = font.glyph_contours('A')
-    print('glyph A: contours=%d advance=%d upem=%d' % (len(contours), adv, font.upem))
-    fill_polygon([(100, 100), (400, 100), (400, 300), (100, 300)], RED)
-    draw_text(font, 'STAGE 1 OK', 100, 400, 48, INK)
-    hline(100, 500, 420, LINE, 2)
-    n = write_png('/home/agentuser/ni24-v4/build/stage1.png')
-    print('stage1.png bytes=%d' % n)
-
